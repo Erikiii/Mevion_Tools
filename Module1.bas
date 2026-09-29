@@ -1,4 +1,3 @@
-Attribute VB_Name = "Module1"
 Option Explicit
 
 Public Sub SendCalibrationAlerts()
@@ -6,6 +5,8 @@ Public Sub SendCalibrationAlerts()
     Const RECIPIENTS As String = _
         "xihao.han@mevion.com;yiqian.lv@mevion.com;bin.yu@mevion.com;peng.cui@mevion.com;wendong.tian@mevion.com"
     Const ALERT_COOLDOWN As Long = 7
+    Const HEADER_ROW As Long = 3
+    Const DATA_START_ROW As Long = 4
 
     Dim ws As Worksheet
     Dim lastRow As Long
@@ -17,11 +18,19 @@ Public Sub SendCalibrationAlerts()
     Dim daysSinceAlert As Long
     Dim body As String
     Dim alertCount As Long
-    Dim toolId As String
+    Dim partNo As String       ' Renamed from toolId
     Dim toolName As String
     Dim location As String
     Dim nextCalDate As Variant
     Dim lastAlertStr As String
+
+    ' Dynamic Column Variables
+    Dim colPartNo As Long      ' Renamed from colToolID
+    Dim colToolName As Long
+    Dim colLocation As Long
+    Dim colStatus As Long
+    Dim colNextCal As Long
+    Dim colLastAlert As Long
 
     On Error GoTo ErrorHandler
 
@@ -31,32 +40,63 @@ Public Sub SendCalibrationAlerts()
     Application.CalculateFull
     DoEvents
 
-    ' Find the last row with data in column B (Tool ID)
-    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
-    If lastRow < 4 Then lastRow = 4
+    ' --- 1. Identify Column Indexes Dynamically ---
+    ' We use Application.Match to find the column number based on the header text in Row 3.
+    ' If a header is missing, the macro will alert you and stop.
+    
+    On Error Resume Next ' Suppress error if Match fails so we can check it manually
+    
+    colPartNo = Application.Match("Part No.", ws.Rows(HEADER_ROW), 0)
+    colToolName = Application.Match("Tool Name", ws.Rows(HEADER_ROW), 0)
+    colLocation = Application.Match("Location", ws.Rows(HEADER_ROW), 0)
+    colStatus = Application.Match("Calibration Status", ws.Rows(HEADER_ROW), 0)
+    colNextCal = Application.Match("Next Calibration Date", ws.Rows(HEADER_ROW), 0)
+    colLastAlert = Application.Match("Last Alert Sent", ws.Rows(HEADER_ROW), 0)
+    
+    On Error GoTo ErrorHandler ' Re-enable standard error handling
 
+    ' Check if all columns were found
+    If IsError(colPartNo) Or IsError(colToolName) Or IsError(colLocation) Or _
+       IsError(colStatus) Or IsError(colNextCal) Or IsError(colLastAlert) Then
+        MsgBox "Error: One or more required headers were not found in Row " & HEADER_ROW & "." & vbCrLf & _
+               "Please ensure the following headers exist exactly as spelled:" & vbCrLf & _
+               "- Part No." & vbCrLf & _
+               "- Tool Name" & vbCrLf & _
+               "- Location" & vbCrLf & _
+               "- Calibration Status" & vbCrLf & _
+               "- Next Calibration Date" & vbCrLf & _
+               "- Last Alert Sent", vbCritical
+        Exit Sub
+    End If
+
+    ' --- 2. Find Last Row ---
+    ' Using the dynamic Part No. column to find the bottom of the data
+    lastRow = ws.Cells(ws.Rows.Count, colPartNo).End(xlUp).Row
+    If lastRow < DATA_START_ROW Then lastRow = DATA_START_ROW
+
+    ' --- 3. Build Email Body ---
     body = "<html><body>" & _
            "<p>The following calibration tasks have status <strong>Expiring Soon</strong> " & _
            "and are eligible for alert (no alert sent in the past " & ALERT_COOLDOWN & _
            " days or never alerted):</p>" & _
            "<table border='1' cellpadding='5' cellspacing='0'>" & _
            "<tr style='background:#1F4E78;color:white;'>" & _
-           "<th>No.</th><th>Tool ID</th><th>Tool Name</th>" & _
+           "<th>No.</th><th>Part No.</th><th>Tool Name</th>" & _
            "<th>Location</th><th>Next Calibration Date</th>" & _
            "<th>Status</th><th>Last Alert Sent</th></tr>"
 
     alertCount = 0
 
-    For i = 4 To lastRow
+    For i = DATA_START_ROW To lastRow
 
-        ' Get Calibration Status (column N)
-        statusVal = Trim(CStr(ws.Cells(i, 14).value))
+        ' Get Calibration Status (Dynamic Column)
+        statusVal = Trim(CStr(ws.Cells(i, colStatus).value))
 
         ' Only process rows where status = "Expiring Soon"
         If statusVal = "Expiring Soon" Then
 
-            ' Get Last Alert date (column R)
-            lastAlert = ws.Cells(i, 18).value
+            ' Get Last Alert date (Dynamic Column)
+            lastAlert = ws.Cells(i, colLastAlert).value
 
             ' Check if alert should be sent:
             ' - If no last alert date recorded (empty/null), OR
@@ -73,11 +113,11 @@ Public Sub SendCalibrationAlerts()
 
             If daysSinceAlert >= ALERT_COOLDOWN Then
 
-                ' Gather cell values for email body
-                toolId = CStr(ws.Cells(i, 2).value)
-                toolName = CStr(ws.Cells(i, 3).value)
-                location = CStr(ws.Cells(i, 9).value)
-                nextCalDate = ws.Cells(i, 13).value
+                ' Gather cell values for email body using Dynamic Columns
+                partNo = CStr(ws.Cells(i, colPartNo).value)
+                toolName = CStr(ws.Cells(i, colToolName).value)
+                location = CStr(ws.Cells(i, colLocation).value)
+                nextCalDate = ws.Cells(i, colNextCal).value
 
                 ' Format last alert string for display
                 If IsEmpty(lastAlert) Or IsNull(lastAlert) Or _
@@ -93,7 +133,7 @@ Public Sub SendCalibrationAlerts()
 
                 body = body & "<tr>" & _
                     "<td>" & alertCount & "</td>" & _
-                    "<td>" & HtmlEncode(toolId) & "</td>" & _
+                    "<td>" & HtmlEncode(partNo) & "</td>" & _
                     "<td>" & HtmlEncode(toolName) & "</td>" & _
                     "<td>" & HtmlEncode(location) & "</td>" & _
                     "<td>" & Format(nextCalDate, "yyyy-mm-dd") & "</td>" & _
@@ -101,8 +141,8 @@ Public Sub SendCalibrationAlerts()
                     HtmlEncode(statusVal) & "</td>" & _
                     "<td>" & Format(Date, "yyyy-mm-dd") & "</td></tr>"
 
-                ' Record today's date as last alert sent
-                ws.Cells(i, 18).value = Date
+                ' Record today's date as last alert sent (Dynamic Column)
+                ws.Cells(i, colLastAlert).value = Date
             End If
         End If
     Next i
